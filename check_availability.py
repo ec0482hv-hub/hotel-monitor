@@ -2,7 +2,8 @@
 import smtplib
 import os
 import json
-import requests
+import urllib.request
+import urllib.error
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from datetime import datetime
@@ -28,39 +29,40 @@ TRIPLA_API_URL = (
     f"&checkin_date={CHECKIN}"
     f"&checkout_date={CHECKOUT}"
 )
-HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-    "Accept": "application/json",
-    "Referer": "https://concierge.tripla.ai/",
-}
 
 
 def check_availability() -> tuple[bool, str]:
-    print(f"  API確認中...")
-    resp = requests.get(TRIPLA_API_URL, headers=HEADERS, timeout=30)
-    print(f"  ステータス: {resp.status_code}")
+    print(f"  API確認中: {TRIPLA_API_URL[:80]}...")
+    req = urllib.request.Request(
+        TRIPLA_API_URL,
+        headers={
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            "Accept": "application/json",
+            "Referer": "https://concierge.tripla.ai/",
+        },
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        print(f"  APIエラー: {e.code}")
+        return False, f"APIエラー({e.code})"
+    except Exception as e:
+        print(f"  接続エラー: {e}")
+        return False, f"接続エラー"
 
-    if resp.status_code != 200:
-        print(f"  APIエラー: {resp.status_code}")
-        return False, f"APIエラー({resp.status_code})"
-
-    data = resp.json()
     data_str = json.dumps(data, ensure_ascii=False)
     print(f"  レスポンス（先頭500文字）: {data_str[:500]}")
 
-    # 対象部屋が含まれているか確認
     if not any(v in data_str for v in TARGET_ROOM_VARIANTS):
-        print("  対象部屋なし（満室のため非表示）")
+        print("  対象部屋なし（満室のため非表示の可能性）")
         return False, ""
 
-    # 部屋リストを取得
     rooms = data if isinstance(data, list) else data.get("rooms", data.get("room_types", []))
-
     for room in (rooms if isinstance(rooms, list) else []):
         room_str = json.dumps(room, ensure_ascii=False)
         if not any(v in room_str for v in TARGET_ROOM_VARIANTS):
             continue
-        # 対象部屋を発見 → 空室状況を確認
         sold_out = room.get("sold_out", room.get("is_sold_out", False))
         available = room.get("available", room.get("is_available", True))
         print(f"  対象部屋: sold_out={sold_out}, available={available}")
@@ -68,7 +70,6 @@ def check_availability() -> tuple[bool, str]:
             return False, "満室"
         return True, "APIレスポンス"
 
-    # rooms配列で見つからなかった場合
     print("  部屋名はAPIに含まれているが詳細不明 → 念のため通知")
     return True, "APIレスポンス（要確認）"
 
