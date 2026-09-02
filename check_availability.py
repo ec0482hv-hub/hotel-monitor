@@ -25,7 +25,6 @@ TRIPLA_API_URL = (
     "https://concierge.tripla.ai/book/hotels/1917/rooms"
     "?order=recommended"
     "&rooms[][adults]=2"
-    "&rooms[][children_ages][]="
     f"&checkin_date={CHECKIN}"
     f"&checkout_date={CHECKOUT}"
 )
@@ -38,6 +37,8 @@ def check_availability() -> tuple[bool, str]:
         headers={
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
             "Accept": "application/json",
+            "Accept-Language": "ja-JP,ja;q=0.9",
+            "Origin": "https://concierge.tripla.ai",
             "Referer": "https://concierge.tripla.ai/",
         },
     )
@@ -49,7 +50,7 @@ def check_availability() -> tuple[bool, str]:
         return False, f"APIエラー({e.code})"
     except Exception as e:
         print(f"  接続エラー: {e}")
-        return False, f"接続エラー"
+        return False, "接続エラー"
 
     data_str = json.dumps(data, ensure_ascii=False)
     print(f"  レスポンス（先頭500文字）: {data_str[:500]}")
