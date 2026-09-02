@@ -16,7 +16,8 @@ TARGET_ROOM_VARIANTS = [
 CHECKIN = "2026-10-24"
 CHECKOUT = "2026-10-25"
 HOTEL_ID = "1917"
-BOOKING_URL = "https://www.palacehoteltokyo.com/?tripla_booking_widget_open=search&type=plan"
+WIDGET_URL = "https://www.palacehoteltokyo.com/?tripla_booking_widget_open=search&type=plan"
+BOOKING_URL = WIDGET_URL
 
 GMAIL_USER = os.environ["GMAIL_USER"]
 GMAIL_APP_PASSWORD = os.environ["GMAIL_APP_PASSWORD"]
@@ -24,7 +25,8 @@ NOTIFY_EMAIL = os.environ.get("NOTIFY_EMAIL", GMAIL_USER)
 
 
 async def check_availability() -> tuple[bool, str]:
-    rooms_data = []
+    all_rooms_data = []
+    intercepted_rooms_url = None
 
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
@@ -34,41 +36,65 @@ async def check_availability() -> tuple[bool, str]:
         )
         page = await context.new_page()
 
+        # rooms APIのURLとレスポンスを傍受
         async def on_response(response):
-            if f"/book/hotels/{HOTEL_ID}/rooms" in response.url and response.status == 200:
+            nonlocal intercepted_rooms_url
+            if "/rooms" in response.url and "tripla" in response.url and response.status == 200:
                 try:
                     data = await response.json()
-                    rooms_data.append(data)
+                    all_rooms_data.append(data)
+                    intercepted_rooms_url = response.url.split("?")[0]
                     print(f"  [API傍受] {response.url[:80]}")
                 except Exception:
                     pass
 
         page.on("response", on_response)
 
-        url = (
-            f"https://concierge.tripla.ai/book/hotels/{HOTEL_ID}/"
-            f"?checkin_date={CHECKIN}&checkout_date={CHECKOUT}&number_of_units=1"
-        )
-        print("  ページ読込中...")
+        # ホテルのウィジェットを開く（セッション確立）
+        print("  ウィジェット読込中...")
         try:
-            await page.goto(url, wait_until="networkidle", timeout=30000)
+            await page.goto(WIDGET_URL, wait_until="networkidle", timeout=30000)
         except Exception:
             pass
+        await page.wait_for_timeout(4000)
 
-        await page.wait_for_timeout(5000)
+        # 傍受したURLのベースを使って日付付きでfetch（ブラウザセッション経由）
+        if intercepted_rooms_url:
+            dated_url = (
+                f"{intercepted_rooms_url}"
+                f"?order=recommended"
+                f"&rooms[][adults]=2"
+                f"&checkin_date={CHECKIN}"
+                f"&checkout_date={CHECKOUT}"
+            )
+            print(f"  日付付きAPIを呼び出し中...")
+            try:
+                result = await page.evaluate(f"""
+                    async () => {{
+                        const r = await fetch('{dated_url}', {{
+                            headers: {{'Accept': 'application/json'}},
+                            credentials: 'include'
+                        }});
+                        return {{status: r.status, text: await r.text()}};
+                    }}
+                """)
+                print(f"  fetch結果: status={result['status']}")
+                if result["status"] == 200:
+                    data = json.loads(result["text"])
+                    all_rooms_data.append(data)
+                    print(f"  レスポンス（先頭300文字）: {json.dumps(data, ensure_ascii=False)[:300]}")
+            except Exception as e:
+                print(f"  fetch失敗: {e}")
+        else:
+            print("  rooms URLを傍受できませんでした")
+
         await browser.close()
 
-    if not rooms_data:
-        print("  APIレスポンスを傍受できませんでした")
-        return False, "傍受失敗"
-
-    for data in rooms_data:
+    # 取得したデータを解析（最後のものが最新）
+    for data in reversed(all_rooms_data):
         data_str = json.dumps(data, ensure_ascii=False)
-        print(f"  レスポンス（先頭300文字）: {data_str[:300]}")
-
         if not any(v in data_str for v in TARGET_ROOM_VARIANTS):
             continue
-
         rooms = data if isinstance(data, list) else data.get("rooms", data.get("room_types", []))
         for room in (rooms if isinstance(rooms, list) else []):
             room_str = json.dumps(room, ensure_ascii=False)
@@ -81,7 +107,8 @@ async def check_availability() -> tuple[bool, str]:
                 return False, "満室"
             return True, "APIレスポンス"
 
-    return False, "部屋未検出"
+    print("  満室または対象部屋未検出")
+    return False, ""
 
 
 def send_email(subject: str, body: str):
@@ -118,7 +145,6 @@ async def main():
 {BOOKING_URL}
 
 検出時刻: {timestamp}
-検出元: {source}
 ━━━━━━━━━━━━━━━━━━━━━━━━━"""
         send_email(f"【速報】パレスホテル東京 空室あり！ {CHECKIN}", message)
         print("  空室検出 → 通知送信完了")
