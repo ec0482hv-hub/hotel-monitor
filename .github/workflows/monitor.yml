@@ -2,7 +2,9 @@ name: Palace Hotel - 空室監視
 
 on:
   schedule:
+    # 5分おきにチェック（UTC。日本時間は+9h）
     - cron: '*/5 * * * *'
+  # GitHubのActionsページから手動実行も可能
   workflow_dispatch:
     inputs:
       test_mode:
@@ -37,3 +39,12 @@ jobs:
           NOTIFY_EMAIL: ${{ secrets.NOTIFY_EMAIL }}
           TEST_MODE: ${{ github.event.inputs.test_mode || '0' }}
         run: python check_availability.py
+
+      - name: スクリーンショット保存（デバッグ）
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: debug-screenshot
+          path: debug_screenshot.png
+          if-no-files-found: ignore
+          retention-days: 1
