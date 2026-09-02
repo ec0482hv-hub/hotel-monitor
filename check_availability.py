@@ -45,7 +45,7 @@ async def check_availability() -> tuple[bool, str]:
                     all_rooms_data.append({"url": response.url, "data": data})
                     data_str = json.dumps(data, ensure_ascii=False)
                     print(f"  [API傍受] {response.url[:100]}")
-                    print(f"  [データ先頭500] {data_str[:500]}")
+                    print(f"  [先頭300] {data_str[:300]}")
                 except Exception as e:
                     print(f"  [傍受エラー] {e}")
 
@@ -58,55 +58,79 @@ async def check_availability() -> tuple[bool, str]:
             pass
         await page.wait_for_timeout(3000)
 
-        # スクリーンショット保存（UI確認用）
+        # bw.tripla.ai のiframeを取得
+        tripla_frame = None
+        for frame in page.frames:
+            if "bw.tripla.ai" in frame.url:
+                tripla_frame = frame
+                print(f"  [triplaフレーム] {frame.url[:120]}")
+                break
+
+        if tripla_frame is None:
+            print("  triplaフレームが見つかりません")
+            for frame in page.frames:
+                print(f"  [フレーム] {frame.url[:80]}")
+        else:
+            # iframeのHTML先頭を確認
+            try:
+                iframe_html = await tripla_frame.content()
+                print(f"  [iframeHTML先頭1000] {iframe_html[:1000]}")
+            except Exception as e:
+                print(f"  HTML取得失敗: {e}")
+
+            # 「部屋」タブをクリック
+            try:
+                await tripla_frame.click("text=部屋", timeout=5000)
+                print("  「部屋」タブをクリック成功")
+                await page.wait_for_timeout(4000)
+            except Exception as e:
+                print(f"  「部屋」タブクリック失敗: {e}")
+                # 別の方法でクリック
+                try:
+                    tabs = await tripla_frame.query_selector_all("[role='tab'], button")
+                    for tab in tabs:
+                        text = await tab.inner_text()
+                        if "部屋" in text or "Room" in text:
+                            await tab.click()
+                            print(f"  部屋タブクリック（テキスト={text.strip()}）")
+                            await page.wait_for_timeout(4000)
+                            break
+                except Exception as e2:
+                    print(f"  部屋タブ代替クリック失敗: {e2}")
+
+        # スクリーンショット
         await page.screenshot(path="debug_screenshot.png", full_page=True)
         print("  スクリーンショット保存")
 
-        # フレーム情報
-        for i, frame in enumerate(page.frames):
-            print(f"  [frame{i}] {frame.url[:80]}")
-
-        # triplaフレームのHTML確認
-        for frame in page.frames:
-            if "tripla" in frame.url or "concierge" in frame.url:
-                try:
-                    html = await frame.content()
-                    print(f"  [triplaHTML先頭800] {html[:800]}")
-                except Exception as e:
-                    print(f"  [HTML取得失敗] {e}")
-
-        # ページ全体のHTMLも確認
-        main_html = await page.content()
-        print(f"  [メインHTML先頭500] {main_html[:500]}")
-
         await page.wait_for_timeout(2000)
 
-        # 日付付きAPIが来ているか確認
+        print(f"  傍受API数: {len(all_rooms_data)}")
         has_dated = any(CHECKIN in d["url"] for d in all_rooms_data)
-        print(f"  日付付きAPI傍受: {has_dated}")
+        print(f"  日付付きAPI: {has_dated}")
 
         await browser.close()
 
-    # データ解析
-    for item in all_rooms_data:
+    # 解析
+    for item in sorted(all_rooms_data, key=lambda d: (CHECKIN in d["url"]), reverse=True):
         data = item["data"]
         data_str = json.dumps(data, ensure_ascii=False)
-        if any(v in data_str for v in TARGET_ROOM_VARIANTS):
-            rooms = data if isinstance(data, list) else data.get("rooms", data.get("room_types", []))
-            for room in (rooms if isinstance(rooms, list) else []):
-                room_str = json.dumps(room, ensure_ascii=False)
-                if not any(v in room_str for v in TARGET_ROOM_VARIANTS):
-                    continue
-                sold_out = room.get("sold_out", room.get("is_sold_out", None))
-                available = room.get("available", room.get("is_available", None))
-                has_date = CHECKIN in item["url"]
-                print(f"  [対象部屋] date={has_date}, sold_out={sold_out}, available={available}")
-                if has_date:
-                    if sold_out or available is False:
-                        return False, "満室"
-                    return True, "空室"
+        if not any(v in data_str for v in TARGET_ROOM_VARIANTS):
+            continue
+        rooms = data if isinstance(data, list) else data.get("rooms", data.get("room_types", []))
+        for room in (rooms if isinstance(rooms, list) else []):
+            room_str = json.dumps(room, ensure_ascii=False)
+            if not any(v in room_str for v in TARGET_ROOM_VARIANTS):
+                continue
+            sold_out = room.get("sold_out", room.get("is_sold_out", None))
+            available = room.get("available", room.get("is_available", None))
+            has_date = CHECKIN in item["url"]
+            print(f"  [対象部屋] date={has_date}, sold_out={sold_out}, available={available}")
+            if has_date:
+                if sold_out or available is False:
+                    return False, "満室"
+                return True, "空室"
 
-    print("  対象部屋未検出（デバッグ情報を確認してください）")
+    print("  対象部屋未検出")
     return False, ""
 
 
