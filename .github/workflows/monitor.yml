@@ -24,9 +24,6 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: 依存ライブラリのインストール
-        run: pip install requests
-
       - name: 空室チェック実行
         env:
           GMAIL_USER: ${{ secrets.GMAIL_USER }}
