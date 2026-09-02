@@ -1,12 +1,11 @@
 #!/usr/bin/env python3
+import asyncio
 import smtplib
 import os
 import json
-import urllib.request
-import urllib.error
-import http.cookiejar
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
+from playwright.async_api import async_playwright
 from datetime import datetime
 
 TARGET_ROOM_VARIANTS = [
@@ -16,77 +15,73 @@ TARGET_ROOM_VARIANTS = [
 ]
 CHECKIN = "2026-10-24"
 CHECKOUT = "2026-10-25"
-BOOKING_URL = "https://www.palacehoteltokyo.com/?tripla_booking_widget_open=search&type=plan"
 HOTEL_ID = "1917"
+BOOKING_URL = "https://www.palacehoteltokyo.com/?tripla_booking_widget_open=search&type=plan"
 
 GMAIL_USER = os.environ["GMAIL_USER"]
 GMAIL_APP_PASSWORD = os.environ["GMAIL_APP_PASSWORD"]
 NOTIFY_EMAIL = os.environ.get("NOTIFY_EMAIL", GMAIL_USER)
 
-BASE_HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-    "Accept": "application/json, text/plain, */*",
-    "Accept-Language": "ja-JP,ja;q=0.9,en-US;q=0.8,en;q=0.7",
-    "Origin": "https://concierge.tripla.ai",
-    "Referer": "https://concierge.tripla.ai/",
-}
 
+async def check_availability() -> tuple[bool, str]:
+    rooms_data = []
 
-def check_availability() -> tuple[bool, str]:
-    cookie_jar = http.cookiejar.CookieJar()
-    opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(cookie_jar))
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(headless=True)
+        context = await browser.new_context(
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            locale="ja-JP",
+        )
+        page = await context.new_page()
 
-    # Step1: triplaのセッションページにアクセスしてクッキーを取得
-    try:
-        warmup_url = f"https://concierge.tripla.ai/book/hotels/{HOTEL_ID}/"
-        req0 = urllib.request.Request(warmup_url, headers=BASE_HEADERS)
-        opener.open(req0, timeout=15)
-        print("  セッション確立完了")
-    except Exception as e:
-        print(f"  セッション確立スキップ: {e}")
+        async def on_response(response):
+            if f"/book/hotels/{HOTEL_ID}/rooms" in response.url and response.status == 200:
+                try:
+                    data = await response.json()
+                    rooms_data.append(data)
+                    print(f"  [API傍受] {response.url[:80]}")
+                except Exception:
+                    pass
 
-    # Step2: 空室APIにアクセス
-    rooms_url = (
-        f"https://concierge.tripla.ai/book/hotels/{HOTEL_ID}/rooms"
-        f"?order=recommended"
-        f"&rooms[][adults]=2"
-        f"&checkin_date={CHECKIN}"
-        f"&checkout_date={CHECKOUT}"
-    )
-    print(f"  API確認中...")
-    try:
-        req = urllib.request.Request(rooms_url, headers=BASE_HEADERS)
-        with opener.open(req, timeout=30) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
-    except urllib.error.HTTPError as e:
-        body = e.read().decode("utf-8", errors="ignore")
-        print(f"  APIエラー: {e.code} / {body[:200]}")
-        return False, f"APIエラー({e.code})"
-    except Exception as e:
-        print(f"  接続エラー: {e}")
-        return False, "接続エラー"
+        page.on("response", on_response)
 
-    data_str = json.dumps(data, ensure_ascii=False)
-    print(f"  レスポンス（先頭500文字）: {data_str[:500]}")
+        url = (
+            f"https://concierge.tripla.ai/book/hotels/{HOTEL_ID}/"
+            f"?checkin_date={CHECKIN}&checkout_date={CHECKOUT}&number_of_units=1"
+        )
+        print("  ページ読込中...")
+        try:
+            await page.goto(url, wait_until="networkidle", timeout=30000)
+        except Exception:
+            pass
 
-    if not any(v in data_str for v in TARGET_ROOM_VARIANTS):
-        print("  対象部屋なし（満室のため非表示の可能性）")
-        return False, ""
+        await page.wait_for_timeout(5000)
+        await browser.close()
 
-    rooms = data if isinstance(data, list) else data.get("rooms", data.get("room_types", []))
-    for room in (rooms if isinstance(rooms, list) else []):
-        room_str = json.dumps(room, ensure_ascii=False)
-        if not any(v in room_str for v in TARGET_ROOM_VARIANTS):
+    if not rooms_data:
+        print("  APIレスポンスを傍受できませんでした")
+        return False, "傍受失敗"
+
+    for data in rooms_data:
+        data_str = json.dumps(data, ensure_ascii=False)
+        print(f"  レスポンス（先頭300文字）: {data_str[:300]}")
+
+        if not any(v in data_str for v in TARGET_ROOM_VARIANTS):
             continue
-        sold_out = room.get("sold_out", room.get("is_sold_out", False))
-        available = room.get("available", room.get("is_available", True))
-        print(f"  対象部屋: sold_out={sold_out}, available={available}")
-        if sold_out or available is False:
-            return False, "満室"
-        return True, "APIレスポンス"
 
-    print("  部屋名はAPIに含まれているが詳細不明 → 念のため通知")
-    return True, "APIレスポンス（要確認）"
+        rooms = data if isinstance(data, list) else data.get("rooms", data.get("room_types", []))
+        for room in (rooms if isinstance(rooms, list) else []):
+            room_str = json.dumps(room, ensure_ascii=False)
+            if not any(v in room_str for v in TARGET_ROOM_VARIANTS):
+                continue
+            sold_out = room.get("sold_out", room.get("is_sold_out", False))
+            available = room.get("available", room.get("is_available", True))
+            print(f"  対象部屋: sold_out={sold_out}, available={available}")
+            if sold_out or available is False:
+                return False, "満室"
+            return True, "APIレスポンス"
+
+    return False, "部屋未検出"
 
 
 def send_email(subject: str, body: str):
@@ -101,14 +96,14 @@ def send_email(subject: str, body: str):
     print(f"  メール送信完了 → {NOTIFY_EMAIL}")
 
 
-def main():
+async def main():
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     print(f"[{timestamp}] 空室チェック開始")
 
     if os.environ.get("TEST_MODE") == "1":
         found, source = True, "テストモード"
     else:
-        found, source = check_availability()
+        found, source = await check_availability()
 
     if found:
         message = f"""━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -132,4 +127,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
