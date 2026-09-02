@@ -4,6 +4,7 @@ import os
 import json
 import urllib.request
 import urllib.error
+import http.cookiejar
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from datetime import datetime
@@ -16,37 +17,50 @@ TARGET_ROOM_VARIANTS = [
 CHECKIN = "2026-10-24"
 CHECKOUT = "2026-10-25"
 BOOKING_URL = "https://www.palacehoteltokyo.com/?tripla_booking_widget_open=search&type=plan"
+HOTEL_ID = "1917"
 
 GMAIL_USER = os.environ["GMAIL_USER"]
 GMAIL_APP_PASSWORD = os.environ["GMAIL_APP_PASSWORD"]
 NOTIFY_EMAIL = os.environ.get("NOTIFY_EMAIL", GMAIL_USER)
 
-TRIPLA_API_URL = (
-    "https://concierge.tripla.ai/book/hotels/1917/rooms"
-    "?order=recommended"
-    "&rooms[][adults]=2"
-    f"&checkin_date={CHECKIN}"
-    f"&checkout_date={CHECKOUT}"
-)
+BASE_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Accept": "application/json, text/plain, */*",
+    "Accept-Language": "ja-JP,ja;q=0.9,en-US;q=0.8,en;q=0.7",
+    "Origin": "https://concierge.tripla.ai",
+    "Referer": "https://concierge.tripla.ai/",
+}
 
 
 def check_availability() -> tuple[bool, str]:
-    print(f"  API確認中: {TRIPLA_API_URL[:80]}...")
-    req = urllib.request.Request(
-        TRIPLA_API_URL,
-        headers={
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-            "Accept": "application/json",
-            "Accept-Language": "ja-JP,ja;q=0.9",
-            "Origin": "https://concierge.tripla.ai",
-            "Referer": "https://concierge.tripla.ai/",
-        },
-    )
+    cookie_jar = http.cookiejar.CookieJar()
+    opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(cookie_jar))
+
+    # Step1: triplaのセッションページにアクセスしてクッキーを取得
     try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
+        warmup_url = f"https://concierge.tripla.ai/book/hotels/{HOTEL_ID}/"
+        req0 = urllib.request.Request(warmup_url, headers=BASE_HEADERS)
+        opener.open(req0, timeout=15)
+        print("  セッション確立完了")
+    except Exception as e:
+        print(f"  セッション確立スキップ: {e}")
+
+    # Step2: 空室APIにアクセス
+    rooms_url = (
+        f"https://concierge.tripla.ai/book/hotels/{HOTEL_ID}/rooms"
+        f"?order=recommended"
+        f"&rooms[][adults]=2"
+        f"&checkin_date={CHECKIN}"
+        f"&checkout_date={CHECKOUT}"
+    )
+    print(f"  API確認中...")
+    try:
+        req = urllib.request.Request(rooms_url, headers=BASE_HEADERS)
+        with opener.open(req, timeout=30) as resp:
             data = json.loads(resp.read().decode("utf-8"))
     except urllib.error.HTTPError as e:
-        print(f"  APIエラー: {e.code}")
+        body = e.read().decode("utf-8", errors="ignore")
+        print(f"  APIエラー: {e.code} / {body[:200]}")
         return False, f"APIエラー({e.code})"
     except Exception as e:
         print(f"  接続エラー: {e}")
