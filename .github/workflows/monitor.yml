@@ -1,0 +1,39 @@
+name: Palace Hotel - 空室監視
+
+on:
+  schedule:
+    - cron: '*/5 * * * *'
+  workflow_dispatch:
+    inputs:
+      test_mode:
+        description: 'テスト通知を送る（1=ON）'
+        required: false
+        default: '0'
+
+jobs:
+  check-availability:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: コードを取得
+        uses: actions/checkout@v4
+
+      - name: Python 3.11 セットアップ
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: 依存ライブラリのインストール
+        run: |
+          pip install playwright
+          playwright install chromium
+          playwright install-deps chromium
+
+      - name: 空室チェック実行
+        env:
+          GMAIL_USER: ${{ secrets.GMAIL_USER }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          NOTIFY_EMAIL: ${{ secrets.NOTIFY_EMAIL }}
+          TEST_MODE: ${{ github.event.inputs.test_mode || '0' }}
+        run: python check_availability.py
